@@ -2,13 +2,9 @@
  * Transport layer.
  *
  * Every screen talks to `lib/api/*`, and every `lib/api/*` function goes
- * through `request()`. When the real backend lands, the body of `request()`
- * becomes a `fetch` call and nothing above it changes.
- *
- *   // future implementation
- *   const res = await fetch(`${API_BASE_URL}${path}`, init);
- *   if (!res.ok) throw new ApiError(await res.text(), res.status);
- *   return res.json() as Promise<T>;
+ * through `request()`, which calls the Tayyo backend (proxied through
+ * `/api/*` — see next.config.ts) and unwraps its response envelope:
+ *   { success: true, data } | { success: false, error: { code, message } }
  */
 
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
@@ -26,39 +22,48 @@ export class ApiError extends Error {
 }
 
 export interface RequestOptions {
-  /** Simulated latency in ms. Keeps loading and skeleton states honest. */
+  /** Kept for call-site compatibility; real requests have real latency. */
   latencyMs?: number;
-  /** Abort signal, forwarded to fetch once this is a real network call. */
+  /** Abort signal, forwarded to fetch. */
   signal?: AbortSignal;
 }
 
-const DEFAULT_LATENCY = 420;
-
-function wait(ms: number, signal?: AbortSignal) {
-  return new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new DOMException("Aborted", "AbortError"));
-      return;
-    }
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        reject(new DOMException("Aborted", "AbortError"));
-      },
-      { once: true },
-    );
-  });
+interface Envelope<T> {
+  success: boolean;
+  data?: T;
+  error?: { code?: string; message?: string };
 }
 
 export async function request<T>(
-  resolver: () => T | Promise<T>,
+  path: string,
+  init: RequestInit = {},
   options: RequestOptions = {},
 ): Promise<T> {
-  const { latencyMs = DEFAULT_LATENCY, signal } = options;
-  await wait(latencyMs, signal);
-  return resolver();
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    credentials: "include",
+    ...init,
+    headers: {
+      ...(init.body ? { "Content-Type": "application/json" } : {}),
+      ...init.headers,
+    },
+    signal: options.signal,
+  });
+
+  let envelope: Envelope<T>;
+  try {
+    envelope = (await res.json()) as Envelope<T>;
+  } catch {
+    throw new ApiError("Unexpected response from the server.", res.status);
+  }
+
+  if (!res.ok || !envelope.success) {
+    throw new ApiError(
+      envelope.error?.message ?? "Something went wrong.",
+      res.status,
+      envelope.error?.code,
+    );
+  }
+  return envelope.data as T;
 }
 
 export function isAbortError(error: unknown) {

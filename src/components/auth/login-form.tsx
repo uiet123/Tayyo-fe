@@ -19,7 +19,7 @@ type LoginField = "email" | "password";
 
 export function LoginForm() {
   const router = useRouter();
-  const [email, setEmail] = useState("aarav.sharma@gmail.com");
+  const [email, setEmail] = useState("demo@tayyo.dev");
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(true);
   const [errors, setErrors] = useState<FieldErrors<LoginField>>({});

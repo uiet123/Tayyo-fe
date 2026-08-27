@@ -1,52 +1,58 @@
 import type { CreditBalance, CreditPackage, CreditTransaction } from "@/types";
 import { mockCreditPackages } from "@/lib/mock/credits";
 import { ApiError, request, type RequestOptions } from "./client";
-import { notifyStoreChanged, store } from "./store";
+import { mapTransaction, type ApiPage, type ApiTransaction } from "./mappers";
 
-export function getCreditBalance(options?: RequestOptions): Promise<CreditBalance> {
-  return request(() => ({ ...store.credits }), options);
+export async function getCreditBalance(options?: RequestOptions): Promise<CreditBalance> {
+  const [{ balance }, txns] = await Promise.all([
+    request<{ balance: number }>("/credits/balance", {}, options),
+    request<ApiPage<ApiTransaction>>("/credits/transactions?pageSize=50", {}, options),
+  ]);
+
+  const monthStart = new Date();
+  monthStart.setDate(1);
+  monthStart.setHours(0, 0, 0, 0);
+
+  const usedThisMonth = txns.items
+    .filter((t) => t.amount < 0 && new Date(t.createdAt) >= monthStart)
+    .reduce((sum, t) => sum - t.amount, 0);
+  const lifetimePurchased = txns.items
+    .filter((t) => t.type === "PURCHASE" && t.amount > 0)
+    .reduce((sum, t) => sum + t.amount, 0);
+
+  return { balance, usedThisMonth, lifetimePurchased, lowBalanceThreshold: 40 };
 }
 
-export function getCreditPackages(options?: RequestOptions): Promise<CreditPackage[]> {
-  return request(() => mockCreditPackages, options);
+/** Packages stay static until payments are wired up. */
+export function getCreditPackages(_options?: RequestOptions): Promise<CreditPackage[]> {
+  return Promise.resolve(mockCreditPackages);
 }
 
-export function getCreditTransactions(options?: RequestOptions): Promise<CreditTransaction[]> {
-  return request(() => [...store.transactions], options);
+export async function getCreditTransactions(
+  options?: RequestOptions,
+): Promise<CreditTransaction[]> {
+  const data = await request<ApiPage<ApiTransaction>>(
+    "/credits/transactions?pageSize=50",
+    {},
+    options,
+  );
+  return data.items.map(mapTransaction);
 }
 
 /**
  * Placeholder for checkout. The real implementation will create a payment
  * order and hand off to the gateway; nothing in the UI needs to change.
  */
-export function purchaseCredits(packageId: string, options?: RequestOptions): Promise<never> {
-  return request(() => {
-    const pack = mockCreditPackages.find((item) => item.id === packageId);
-    throw new ApiError(
-      pack
-        ? `Payments are not live yet. The ${pack.name} pack will be purchasable soon.`
-        : "Unknown credit package.",
-      501,
-      "PAYMENTS_NOT_IMPLEMENTED",
-    );
-  }, options);
-}
-
-/** Used by mock flows that need to spend credits without a payment step. */
-export function spendCredits(amount: number, activity: string): CreditBalance {
-  store.credits.balance = Math.max(0, store.credits.balance - amount);
-  store.credits.usedThisMonth += amount;
-  store.transactions = [
-    {
-      id: `txn_${Math.random().toString(36).slice(2, 8)}`,
-      date: new Date().toISOString(),
-      activity,
-      kind: "practice-questions",
-      amount: -amount,
-      balanceAfter: store.credits.balance,
-    },
-    ...store.transactions,
-  ];
-  notifyStoreChanged();
-  return { ...store.credits };
+export async function purchaseCredits(
+  packageId: string,
+  _options?: RequestOptions,
+): Promise<never> {
+  const pack = mockCreditPackages.find((item) => item.id === packageId);
+  throw new ApiError(
+    pack
+      ? `Payments are not live yet. The ${pack.name} pack will be purchasable soon.`
+      : "Unknown credit package.",
+    501,
+    "PAYMENTS_NOT_IMPLEMENTED",
+  );
 }
